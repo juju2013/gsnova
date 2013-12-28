@@ -4,11 +4,11 @@ import (
 	"bufio"
 	"code.google.com/p/go.crypto/ssh"
 	"common"
-	"crypto"
-	"crypto/dsa"
-	"crypto/rsa"
+	_ "crypto"
+	_ "crypto/dsa"
+	_ "crypto/rsa"
 	_ "crypto/sha1"
-	"crypto/x509"
+	_ "crypto/x509"
 	"encoding/pem"
 	"errors"
 	"event"
@@ -118,7 +118,7 @@ func (conn *SSHConnection) Request(sess *SessionConnection, ev event.Event) (err
 				conn.ssh_conn.CloseConn()
 				return err, nil
 			}
-			conn.proxy_conn.SetReadDeadline(time.Now().Add(10*time.Second))
+			conn.proxy_conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 			resp, err := http.ReadResponse(conn.proxy_conn_reader, req.RawReq)
 			if err != nil {
 				conn.ssh_conn.CloseConn()
@@ -238,37 +238,57 @@ func (p password) Password(user string) (string, error) {
 
 // keychain implements the ClientKeyring interface
 type keychain struct {
-	keys []interface{}
+	keys []ssh.Signer
 }
 
-func (k *keychain) Key(i int) (interface{}, error) {
+func (k *keychain) Key(i int) (ssh.PublicKey, error) {
 	if i < 0 || i >= len(k.keys) {
 		return nil, nil
 	}
-	switch key := k.keys[i].(type) {
-	case *rsa.PrivateKey:
-		return &key.PublicKey, nil
-	case *dsa.PrivateKey:
-		return &key.PublicKey, nil
-	}
-	panic("unknown key type")
+	return k.keys[i].PublicKey(), nil
+	/*	switch key := k.keys[i].(type) {
+		case *rsa.PrivateKey:
+			return &key.PublicKey, nil
+		case *dsa.PrivateKey:
+			return &key.PublicKey, nil
+		}
+		panic("unknown key type")
+	*/
 }
 
 func (k *keychain) Sign(i int, rand io.Reader, data []byte) (sig []byte, err error) {
-	hashFunc := crypto.SHA1
-	h := hashFunc.New()
-	h.Write(data)
-	digest := h.Sum(nil)
-	switch key := k.keys[i].(type) {
-	case *rsa.PrivateKey:
-		return rsa.SignPKCS1v15(rand, key, hashFunc, digest)
-	case *dsa.PrivateKey:
-		r, s, err := dsa.Sign(rand, key, digest)
-		if nil == err {
-			return append(r.Bytes(), s.Bytes()...), nil
+	return k.keys[i].Sign(rand, data)
+	/*	hashFunc := crypto.SHA1
+		h := hashFunc.New()
+		h.Write(data)
+		digest := h.Sum(nil)
+		switch key := k.keys[i].(type) {
+		case *rsa.PrivateKey:
+			return rsa.SignPKCS1v15(rand, key, hashFunc, digest)
+		case *dsa.PrivateKey:
+			r, s, err := dsa.Sign(rand, key, digest)
+			if nil == err {
+				return append(r.Bytes(), s.Bytes()...), nil
+			}
 		}
+		return nil, errors.New("ssh: unknown key type")
+	*/
+}
+func (k *keychain) add(key ssh.Signer) {
+	k.keys = append(k.keys, key)
+}
+
+func (k *keychain) loadPEM(file string) error {
+	buf, err := ioutil.ReadFile(file)
+	if err != nil {
+		return err
 	}
-	return nil, errors.New("ssh: unknown key type")
+	key, err := ssh.ParsePrivateKey(buf)
+	if err != nil {
+		return err
+	}
+	k.add(key)
+	return nil
 }
 
 func InitSSH() error {
@@ -325,19 +345,19 @@ func InitSSH() error {
 							}
 							clientKeychain := new(keychain)
 							if strings.Contains(block.Type, "RSA") {
-								rsakey, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+								rsakey, err := ssh.ParsePrivateKey(block.Bytes)
 								if err != nil {
 									log.Printf("Invalid RSA private key for %v.\n", err)
 									continue
 								}
-								clientKeychain.keys = append(clientKeychain.keys, rsakey)
+								clientKeychain.add(rsakey)
 							} else {
-								dsakey, err := util.DecodeDSAPrivateKEy(block.Bytes)
+								dsakey, err := ssh.NewSignerFromKey(block.Bytes)
 								if err != nil {
 									log.Printf("Invalid DSA private key for %v.\n", err)
 									continue
 								}
-								clientKeychain.keys = append(clientKeychain.keys, dsakey)
+								clientKeychain.add(dsakey)
 							}
 
 							ssh_conn.ClientConfig = &ssh.ClientConfig{
